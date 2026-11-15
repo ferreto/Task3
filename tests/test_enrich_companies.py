@@ -49,5 +49,43 @@ class DotenvLoadOrderTests(unittest.TestCase):
         self.assertEqual(result.stdout.strip(), "1234 7.0 test-agent")
 
 
+@requires_psycopg2
+class SelectCompaniesTests(unittest.TestCase):
+    def run_select(self, **overrides):
+        import argparse
+
+        import enrich_companies
+
+        args = argparse.Namespace(company=None, status=None, limit=None)
+        for key, value in overrides.items():
+            setattr(args, key, value)
+        conn = mock.MagicMock()
+        cur = conn.cursor.return_value.__enter__.return_value
+        cur.fetchall.return_value = []
+        enrich_companies.select_companies(conn, args)
+        query, params = cur.execute.call_args[0]
+        return " ".join(query.split()), list(params)
+
+    def test_default_selection_skips_ok_rows(self):
+        query, params = self.run_select()
+        self.assertIn("WHERE (status IS NULL OR status <> 0)", query)
+        self.assertEqual(params, [])
+
+    def test_pending_first_then_least_recently_processed(self):
+        query, _ = self.run_select(limit=2)
+        self.assertIn("ORDER BY (status IS NOT NULL), updated_at, id", query)
+        self.assertTrue(query.endswith("LIMIT %s"))
+
+    def test_limit_is_passed_as_parameter(self):
+        _, params = self.run_select(limit=2)
+        self.assertEqual(params, [2])
+
+    def test_company_filter_ignores_status_default(self):
+        query, params = self.run_select(company="ACME GmbH")
+        self.assertIn("company_name = %s", query)
+        self.assertNotIn("status <> 0", query)
+        self.assertEqual(params, ["ACME GmbH"])
+
+
 if __name__ == "__main__":
     unittest.main()

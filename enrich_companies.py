@@ -89,7 +89,10 @@ def select_companies(conn, args):
     query = "SELECT * FROM companies"
     if conditions:
         query += " WHERE " + " AND ".join(conditions)
-    query += " ORDER BY id"
+    # Pending rows first, then the least recently processed ones. A plain
+    # "ORDER BY id" with --limit keeps re-selecting the same failed rows
+    # (status 1/4/5) at the front and never reaches the pending ones.
+    query += " ORDER BY (status IS NOT NULL), updated_at, id"
     if args.limit:
         query += " LIMIT %s"
         params.append(args.limit)
