@@ -5,6 +5,7 @@ import time
 import psycopg2
 import psycopg2.extras
 from pathlib import Path
+from urllib.parse import quote
 from flask import Flask, request, jsonify, g, send_from_directory, render_template_string
 
 app = Flask(__name__)
@@ -192,7 +193,9 @@ def upload():
 
     file.save(filepath)
 
-    video_url = f"{request.host_url.rstrip('/')}/media/{filename}"
+    # The file name keeps spaces and non-ASCII letters from the company name,
+    # so it has to be percent-encoded to form a valid URL.
+    video_url = f"{request.host_url.rstrip('/')}/media/{quote(filename)}"
 
     db = get_db()
     try:
