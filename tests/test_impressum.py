@@ -311,6 +311,33 @@ class DeepSeekErrorClassificationTests(unittest.TestCase):
                 impressum.call_deepseek("text", "key")
         self.assertEqual(post.call_count, impressum.DEEPSEEK_MAX_ATTEMPTS)
 
+    def test_with_raw_returns_model_json_unchanged(self):
+        content = json.dumps(
+            {
+                "company_name": "ACME GmbH",
+                "postal_address": "Hauptstraße 1, 10115 Berlin",
+                "email": "Info@ACME.DE",
+                "extra_key": {"nested": True},
+            }
+        )
+        response = self.make_response(content=content)
+        with mock.patch.object(impressum.requests, "post", return_value=response):
+            data, raw = impressum.call_deepseek("text", "key", with_raw=True)
+        # raw is what the model returned: nothing dropped, nothing normalized
+        self.assertEqual(raw, json.loads(content))
+        self.assertEqual(raw["email"], "Info@ACME.DE")
+        self.assertEqual(raw["postal_address"], "Hauptstraße 1, 10115 Berlin")
+        # data is still the normalized view
+        self.assertEqual(data["email"], "info@acme.de")
+        self.assertNotIn("extra_key", data)
+
+    def test_without_raw_keeps_returning_normalized_dict(self):
+        response = self.make_response(content='{"company_name": "ACME GmbH"}')
+        with mock.patch.object(impressum.requests, "post", return_value=response):
+            data = impressum.call_deepseek("text", "key")
+        self.assertIsInstance(data, dict)
+        self.assertEqual(data["company_name"], "ACME GmbH")
+
     def test_auth_error_is_not_parse_error(self):
         response = self.make_response(status_code=401)
         with mock.patch.object(impressum.requests, "post", return_value=response) as post:

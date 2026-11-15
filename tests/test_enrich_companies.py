@@ -139,28 +139,72 @@ class ProcessCompanyTests(unittest.TestCase):
         self.assertEqual(status, self.module.CompanyStatus.PARSING_FAILED)
         self.mocks["call_deepseek"].assert_not_called()
 
+    NORMALIZED = {
+        "company_name": "ACME GmbH",
+        "postal_address": {
+            "street": "Hauptstraße",
+            "house_no": "1",
+            "postcode": "10115",
+            "city": "Berlin",
+            "country": None,
+        },
+        "handelsregister": None,
+        "vat_number": None,
+        "phone": None,
+        "email": None,
+        "responsible_person": None,
+    }
+    CONTENT_HTML = (
+        "<html><body><h1>Impressum</h1>"
+        "<p>ACME GmbH, Hauptstraße 1, 10115 Berlin</p></body></html>"
+    )
+
     def test_page_with_content_calls_deepseek(self):
-        self.mocks["call_deepseek"].return_value = {
+        self.mocks["call_deepseek"].return_value = (self.NORMALIZED, dict(self.NORMALIZED))
+        status = self.process(self.CONTENT_HTML)
+        self.assertEqual(status, self.module.CompanyStatus.OK)
+        self.mocks["call_deepseek"].assert_called_once()
+        self.assertTrue(self.mocks["call_deepseek"].call_args.kwargs["with_raw"])
+        self.mocks["update_enriched"].assert_called_once()
+
+    def test_raw_response_is_passed_to_storage(self):
+        raw = {
             "company_name": "ACME GmbH",
-            "postal_address": {
-                "street": "Hauptstraße",
-                "house_no": "1",
-                "postcode": "10115",
-                "city": "Berlin",
-                "country": None,
-            },
+            "postal_address": "Hauptstraße 1, 10115 Berlin",
+            "extra_key": "kept",
+        }
+        self.mocks["call_deepseek"].return_value = (self.NORMALIZED, raw)
+        self.process(self.CONTENT_HTML)
+        args = self.mocks["update_enriched"].call_args.args
+        self.assertEqual(args[6], self.NORMALIZED)
+        self.assertIs(args[7], raw)
+
+
+@requires_psycopg2
+class UpdateEnrichedTests(unittest.TestCase):
+    def test_raw_json_column_gets_the_raw_response(self):
+        import enrich_companies
+
+        raw = {"company_name": "ACME GmbH", "postal_address": "Berlin", "extra_key": 1}
+        normalized = {
+            "company_name": "ACME GmbH",
+            "postal_address": {},
             "handelsregister": None,
             "vat_number": None,
             "phone": None,
             "email": None,
             "responsible_person": None,
         }
-        status = self.process(
-            "<html><body><h1>Impressum</h1><p>ACME GmbH, Hauptstraße 1, 10115 Berlin</p></body></html>"
+        conn = mock.MagicMock()
+        cur = conn.cursor.return_value.__enter__.return_value
+        enrich_companies.update_enriched(
+            conn, 1, enrich_companies.CompanyStatus.OK, "https://example.com/impressum",
+            "ACME GmbH", "Berlin", normalized, raw,
         )
-        self.assertEqual(status, self.module.CompanyStatus.OK)
-        self.mocks["call_deepseek"].assert_called_once()
-        self.mocks["update_enriched"].assert_called_once()
+        params = cur.execute.call_args[0][1]
+        raw_json_param = params[9]
+        self.assertEqual(raw_json_param.adapted, raw)
+        conn.commit.assert_called_once()
 
 
 if __name__ == "__main__":

@@ -389,7 +389,8 @@ def _strip_json_fences(content):
     return "\n".join(lines).strip()
 
 
-def parse_extraction(content):
+def parse_json_object(content):
+    """Return the JSON object contained in the model output, exactly as parsed."""
     if not isinstance(content, str) or not content.strip():
         raise ValueError("Empty DeepSeek response")
 
@@ -405,7 +406,10 @@ def parse_extraction(content):
 
     if not isinstance(data, dict):
         raise ValueError("DeepSeek response is not a JSON object")
+    return data
 
+
+def normalize_extraction(data):
     address = data.get("postal_address")
     if not isinstance(address, dict):
         address = {}
@@ -426,11 +430,21 @@ def parse_extraction(content):
     return normalized
 
 
+def parse_extraction(content):
+    return normalize_extraction(parse_json_object(content))
+
+
 def _backoff(attempt):
     time.sleep(DEEPSEEK_BACKOFF[min(attempt - 1, len(DEEPSEEK_BACKOFF) - 1)])
 
 
-def call_deepseek(text, api_key, model="deepseek-chat", timeout=60):
+def call_deepseek(text, api_key, model="deepseek-chat", timeout=60, with_raw=False):
+    """Extract Impressum data with DeepSeek.
+
+    Returns the normalized dict, or, with ``with_raw=True``, a tuple
+    ``(normalized, raw)`` where ``raw`` is the JSON object exactly as the model
+    returned it.
+    """
     if not api_key:
         raise DeepSeekError("DEEPSEEK_API_KEY is not set")
 
@@ -489,12 +503,14 @@ def call_deepseek(text, api_key, model="deepseek-chat", timeout=60):
             raise last_error from exc
 
         try:
-            return parse_extraction(content)
+            raw = parse_json_object(content)
+            normalized = normalize_extraction(raw)
         except (ValueError, json.JSONDecodeError) as exc:
             last_error = DeepSeekParseError(f"Could not parse DeepSeek JSON: {exc}")
             if attempt < DEEPSEEK_MAX_ATTEMPTS:
                 _backoff(attempt)
                 continue
             raise last_error from exc
+        return (normalized, raw) if with_raw else normalized
 
     raise last_error or DeepSeekError("DeepSeek request failed")

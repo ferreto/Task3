@@ -121,7 +121,10 @@ def update_status(conn, company_id, status, impressum_url=None):
     conn.commit()
 
 
-def update_enriched(conn, company_id, status, impressum_url, legal_name, postal_address, data):
+def update_enriched(
+    conn, company_id, status, impressum_url, legal_name, postal_address, data, raw_data
+):
+    """Store the extracted fields; ``raw_data`` is the model's JSON as returned."""
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -149,7 +152,7 @@ def update_enriched(conn, company_id, status, impressum_url, legal_name, postal_
                 data.get("phone"),
                 data.get("email"),
                 data.get("responsible_person"),
-                psycopg2.extras.Json(data),
+                psycopg2.extras.Json(raw_data),
                 company_id,
             ),
         )
@@ -228,7 +231,7 @@ def process_company(conn, row, api_key, model, logger):
         return CompanyStatus.PARSING_FAILED
 
     try:
-        data = call_deepseek(optimized_text, api_key, model)
+        data, raw_data = call_deepseek(optimized_text, api_key, model, with_raw=True)
     except DeepSeekParseError as exc:
         logger.error(
             "%s: DeepSeek response could not be parsed after retries: %s -> status 2",
@@ -258,6 +261,7 @@ def process_company(conn, row, api_key, model, logger):
         legal_name,
         postal_address,
         data,
+        raw_data,
     )
     logger.info(
         "%s: status %s (%s), legal_name=%r, address=%r",
