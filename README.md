@@ -101,7 +101,9 @@ curl -F "file=@companies.csv" http://127.0.0.1:8000/upload_companies
 - `Web` may be given with or without a scheme. The importer stores it as-is; enrichment
   normalizes it before fetching.
 - The legacy `URL` column is ignored (not stored).
-- Invalid CSV or non-UTF-8 input returns HTTP `400` with a JSON error.
+- An empty file, a file whose header has no `Company Name` column (for example one that uses
+  `,` instead of `;` as the delimiter), invalid CSV, or non-UTF-8 input returns HTTP `400`
+  with a JSON error. Nothing is imported in that case.
 
 ## API endpoints
 
@@ -131,7 +133,7 @@ curl "http://127.0.0.1:8000/companies/nutrimmun%20GmbH"
 | `NULL` | pending | imported, not processed yet |
 | `0` | `OK` | fields detected and address complete |
 | `1` | `NO_IMPRESSUM_LINK_FOUND` | no Impressum/Imprint link on the home page |
-| `2` | `PARSING_FAILED` | no fields detected, or empty/unparseable DeepSeek content after retries |
+| `2` | `PARSING_FAILED` | no text left on the Impressum page (DeepSeek is not called), no fields detected, or empty/unparseable DeepSeek content after retries |
 | `3` | `ADDRESS_INCOMPLETE` | fields detected, but street/house/postcode/city incomplete |
 | `4` | `ERROR` | transport, HTTP/auth, or malformed DeepSeek API envelope |
 | `5` | `NO_WEBSITE` | empty or unusable `web` URL |
@@ -156,18 +158,23 @@ Options:
 - `--status N` — process only rows with this status.
 
 When neither `--company` nor `--status` is given, the default selection is
-`status IS NULL OR status <> 0`, ordered by `id`. `--company` processes that row regardless
-of its current status.
+`status IS NULL OR status <> 0`. Rows are ordered pending first, then by the least recently
+processed (`ORDER BY (status IS NOT NULL), updated_at, id`), so repeated runs with `--limit`
+move on to new companies instead of retrying the same failed ones. `--company` processes
+that row regardless of its current status.
 
 Pipeline per company:
 
 1. Normalize `web` (prepend `https://` when the scheme is missing).
 2. Fetch the home page with a browser-like User-Agent.
 3. Find the Impressum/Imprint link (exact visible text first, `href` fallback).
-4. Fetch the Impressum page, remove non-content tags, extract visible text.
-5. Strip boilerplate and optimize the text for the token budget.
+4. Fetch the Impressum page, remove non-content tags (including forms, unless a form wraps
+   most of the page text, as on ASP.NET WebForms sites), extract visible text.
+5. Strip boilerplate and optimize the text for the token budget. If no text is left, the
+   company gets status `2` and DeepSeek is not called.
 6. Call DeepSeek (default `deepseek-chat`, JSON mode, `temperature=0`, retries with backoff).
-7. Store `impressum_url`, extracted fields, and the full response in `raw_json`; set
+7. Store `impressum_url`, extracted fields, and the JSON object returned by the model, as
+   parsed and unmodified, in `raw_json`; set
    `status` to `0`, `2`, or `3`. Blank or unparseable content after all retries sets `2`;
    transport/API failures set `4`, missing links `1`, empty websites `5`. Statuses `1`,
    `4`, `5`, and unparseable responses preserve previously extracted fields; a valid
@@ -208,16 +215,17 @@ Impressum pages often contain navigation, cookie banners, and footers. The scrip
 
 ## Tests
 
-The suite currently contains 34 tests, with DeepSeek HTTP calls mocked. Unit tests require
-no database, network, or API key:
+The suite currently contains 61 tests, with DeepSeek HTTP calls and the database mocked.
+Unit tests require no running database, network, or API key. Tests for the web service and
+the enrichment script need Flask and `psycopg2` installed and are skipped without them:
 
 ```bash
 python -m venv .venv
 # Windows
-.venv\Scripts\pip install beautifulsoup4 lxml requests
+.venv\Scripts\pip install beautifulsoup4 lxml requests flask psycopg2-binary
 .venv\Scripts\python -m unittest discover -s tests -v
 # Linux/macOS
-.venv/bin/pip install beautifulsoup4 lxml requests
+.venv/bin/pip install beautifulsoup4 lxml requests flask psycopg2-binary
 .venv/bin/python -m unittest discover -s tests -v
 ```
 
@@ -255,7 +263,9 @@ Task3/
 ├── schema.sql
 ├── tests/
 │   ├── __init__.py
-│   └── test_impressum.py
+│   ├── test_enrich_companies.py
+│   ├── test_impressum.py
+│   └── test_web_service.py
 ├── web_service.py
 ├── web_service.wsgi
 └── INTERNSHIP_TASK_3.txt  # local task text, ignored by git and Docker
