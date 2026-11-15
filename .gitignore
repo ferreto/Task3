@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+Task3.md
+
+# Generated files
+video/
+uploads/
+*.webm
+debug_*.png
+
+# Local planning documents
+PROJECT_PLAN.md
+PROGRESS.md
+
+# OS / IDE
+.DS_Store
+.idea/
+.vscode/
+
+# Docker
+*.log
+
+# Task source documents
+*.pdf
+INTERNSHIP_TASK_3.txt
