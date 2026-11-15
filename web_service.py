@@ -122,6 +122,22 @@ def _parse_companies_csv(raw_bytes):
         quotechar='"',
         skipinitialspace=True,
     )
+
+    # Without this check a file with the wrong delimiter or without the
+    # "Company Name" column parses "successfully" and every row is skipped.
+    fieldnames = reader.fieldnames
+    if not fieldnames:
+        raise csv.Error("file is empty")
+    known = {COMPANY_FIELD_MAP.get((name or "").strip().lower()) for name in fieldnames}
+    if "company_name" not in known:
+        header = ";".join(name or "" for name in fieldnames)
+        if len(header) > 100:
+            header = header[:100] + "..."
+        raise csv.Error(
+            "header must contain a 'Company Name' column and use ';' as the "
+            f"delimiter, got: {header!r}"
+        )
+
     rows = []
     for raw in reader:
         row = {}
