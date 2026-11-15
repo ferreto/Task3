@@ -211,6 +211,22 @@ def process_company(conn, row, api_key, model, logger):
         stats["saved_tokens"],
     )
 
+    if not optimized_text.strip():
+        # Nothing to extract from: do not spend an API call (and do not give the
+        # model a chance to invent values).
+        logger.error(
+            "%s: no text extracted from %s -> status 2 (PARSING_FAILED)",
+            company_name,
+            impressum_url,
+        )
+        update_status(
+            conn,
+            row["id"],
+            CompanyStatus.PARSING_FAILED,
+            impressum_url=impressum_url,
+        )
+        return CompanyStatus.PARSING_FAILED
+
     try:
         data = call_deepseek(optimized_text, api_key, model)
     except DeepSeekParseError as exc:

@@ -58,7 +58,9 @@ Rules:
   content (e.g. Geschaeftsfuehrer, Vorstand, "inhaltlich verantwortlich").
 - Output valid JSON only."""
 
-REMOVE_TAGS = ("script", "style", "noscript", "svg", "nav", "header", "footer", "form")
+REMOVE_TAGS = ("script", "style", "noscript", "svg", "nav", "header", "footer")
+# <form> is removed too, unless it holds more than this share of the page text.
+FORM_MAX_TEXT_SHARE = 0.5
 ADDRESS_KEYS = ("street", "house_no", "postcode", "city", "country")
 FIELD_KEYS = (
     "company_name",
@@ -188,10 +190,26 @@ def find_impressum_url(html, base_url):
     return None
 
 
+def _remove_forms(soup):
+    """Drop <form> blocks (contact / newsletter forms) from the soup.
+
+    Some sites (ASP.NET WebForms, for example) wrap the whole page in a single
+    <form>. Removing it would leave no text at all, so a form that holds most of
+    the page text is kept.
+    """
+    total = len(soup.get_text(" ", strip=True))
+    for form in soup.find_all("form"):
+        if form.decomposed:
+            continue
+        if len(form.get_text(" ", strip=True)) <= total * FORM_MAX_TEXT_SHARE:
+            form.decompose()
+
+
 def extract_visible_text(html):
     soup = _make_soup(html)
     for tag in soup.find_all(REMOVE_TAGS):
         tag.decompose()
+    _remove_forms(soup)
     text = soup.get_text("\n")
     lines = []
     for line in text.splitlines():

@@ -1,3 +1,4 @@
+import logging
 import os
 import shutil
 import subprocess
@@ -85,6 +86,81 @@ class SelectCompaniesTests(unittest.TestCase):
         self.assertIn("company_name = %s", query)
         self.assertNotIn("status <> 0", query)
         self.assertEqual(params, ["ACME GmbH"])
+
+
+@requires_psycopg2
+class ProcessCompanyTests(unittest.TestCase):
+    HOME_HTML = '<html><body><a href="/impressum">Impressum</a></body></html>'
+    ROW = {"id": 1, "company_name": "ACME GmbH", "web": "example.com"}
+
+    def setUp(self):
+        import enrich_companies
+
+        self.module = enrich_companies
+        self.conn = mock.MagicMock()
+        self.logger = logging.getLogger("test_enrich_companies")
+        patches = {
+            "sleep": mock.patch.object(enrich_companies.time, "sleep"),
+            "update_status": mock.patch.object(enrich_companies, "update_status"),
+            "update_enriched": mock.patch.object(enrich_companies, "update_enriched"),
+            "call_deepseek": mock.patch.object(enrich_companies, "call_deepseek"),
+        }
+        self.mocks = {}
+        for name, patch in patches.items():
+            self.mocks[name] = patch.start()
+            self.addCleanup(patch.stop)
+
+    def process(self, impressum_html):
+        fetch = mock.patch.object(
+            self.module,
+            "fetch_html",
+            side_effect=[
+                ("https://example.com/", self.HOME_HTML),
+                ("https://example.com/impressum", impressum_html),
+            ],
+        )
+        with fetch:
+            return self.module.process_company(self.conn, self.ROW, "key", "model", self.logger)
+
+    def test_empty_page_text_skips_deepseek(self):
+        status = self.process("<html><body><script>x()</script></body></html>")
+        self.assertEqual(status, self.module.CompanyStatus.PARSING_FAILED)
+        self.mocks["call_deepseek"].assert_not_called()
+        self.mocks["update_enriched"].assert_not_called()
+        self.mocks["update_status"].assert_called_once_with(
+            self.conn,
+            1,
+            self.module.CompanyStatus.PARSING_FAILED,
+            impressum_url="https://example.com/impressum",
+        )
+
+    def test_boilerplate_only_page_skips_deepseek(self):
+        status = self.process("<html><body><p>Datenschutz</p><p>Cookie-Hinweis</p></body></html>")
+        self.assertEqual(status, self.module.CompanyStatus.PARSING_FAILED)
+        self.mocks["call_deepseek"].assert_not_called()
+
+    def test_page_with_content_calls_deepseek(self):
+        self.mocks["call_deepseek"].return_value = {
+            "company_name": "ACME GmbH",
+            "postal_address": {
+                "street": "Hauptstraße",
+                "house_no": "1",
+                "postcode": "10115",
+                "city": "Berlin",
+                "country": None,
+            },
+            "handelsregister": None,
+            "vat_number": None,
+            "phone": None,
+            "email": None,
+            "responsible_person": None,
+        }
+        status = self.process(
+            "<html><body><h1>Impressum</h1><p>ACME GmbH, Hauptstraße 1, 10115 Berlin</p></body></html>"
+        )
+        self.assertEqual(status, self.module.CompanyStatus.OK)
+        self.mocks["call_deepseek"].assert_called_once()
+        self.mocks["update_enriched"].assert_called_once()
 
 
 if __name__ == "__main__":

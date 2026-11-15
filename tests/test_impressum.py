@@ -96,6 +96,44 @@ class ExtractVisibleTextTests(unittest.TestCase):
         for removed in ("var secret", "color: red", "Menu", "Header", "Footer", "Form"):
             self.assertNotIn(removed, text)
 
+    def test_removes_contact_form_next_to_content(self):
+        html = """
+        <main>
+          <h1>Impressum</h1>
+          <p>ACME GmbH, Hauptstraße 1, 10115 Berlin</p>
+          <p>Geschäftsführer: Max Mustermann, Telefon +49 30 1234567</p>
+        </main>
+        <form><label>Ihre Nachricht</label><button>Absenden</button></form>
+        """
+        text = impressum.extract_visible_text(html)
+        self.assertIn("ACME GmbH", text)
+        self.assertNotIn("Absenden", text)
+        self.assertNotIn("Ihre Nachricht", text)
+
+    def test_keeps_form_that_wraps_page_content(self):
+        # ASP.NET WebForms pages put the whole body inside one <form>.
+        html = """
+        <html><body>
+          <form id="form1" method="post">
+            <nav>Menu</nav>
+            <h1>Impressum</h1>
+            <p>ACME GmbH</p>
+            <p>Hauptstraße 1, 10115 Berlin</p>
+          </form>
+        </body></html>
+        """
+        text = impressum.extract_visible_text(html)
+        self.assertIn("Impressum", text)
+        self.assertIn("ACME GmbH", text)
+        self.assertIn("Hauptstraße 1, 10115 Berlin", text)
+        self.assertNotIn("Menu", text)
+
+    def test_page_without_text_gives_empty_string(self):
+        self.assertEqual(
+            impressum.extract_visible_text("<html><body><script>x()</script></body></html>"),
+            "",
+        )
+
 
 class StripBoilerplateTests(unittest.TestCase):
     def test_removes_boilerplate_keeps_legal(self):
