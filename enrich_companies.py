@@ -8,22 +8,6 @@ from pathlib import Path
 import psycopg2
 import psycopg2.extras
 
-from company_status import CompanyStatus, label
-from impressum import (
-    MAX_TEXT_CHARS,
-    DeepSeekError,
-    DeepSeekParseError,
-    call_deepseek,
-    decide_status,
-    extract_visible_text,
-    fetch_html,
-    find_impressum_url,
-    flatten_address,
-    normalize_url,
-    optimize_text,
-    strip_boilerplate_lines,
-)
-
 BASE_DIR = Path(__file__).resolve().parent
 REQUEST_DELAY = 1.0
 
@@ -40,6 +24,27 @@ def load_dotenv(path):
         value = value.strip().strip('"').strip("'")
         if key and key not in os.environ:
             os.environ[key] = value
+
+
+# impressum.py reads MAX_TEXT_CHARS, REQUEST_TIMEOUT and USER_AGENT from the
+# environment at import time, so .env has to be loaded before importing it.
+load_dotenv(BASE_DIR / ".env")
+
+from company_status import CompanyStatus, label  # noqa: E402
+from impressum import (  # noqa: E402
+    MAX_TEXT_CHARS,
+    DeepSeekError,
+    DeepSeekParseError,
+    call_deepseek,
+    decide_status,
+    extract_visible_text,
+    fetch_html,
+    find_impressum_url,
+    flatten_address,
+    normalize_url,
+    optimize_text,
+    strip_boilerplate_lines,
+)
 
 
 def positive_int(value):
@@ -247,7 +252,6 @@ def process_company(conn, row, api_key, model, logger):
 
 
 def main(argv=None):
-    load_dotenv(BASE_DIR / ".env")
     args = parse_args(argv)
     logging.basicConfig(
         level=logging.INFO,
