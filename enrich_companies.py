@@ -89,10 +89,8 @@ def select_companies(conn, args):
     query = "SELECT * FROM companies"
     if conditions:
         query += " WHERE " + " AND ".join(conditions)
-    # Pending rows first, then the least recently processed ones. A plain
-    # "ORDER BY id" with --limit keeps re-selecting the same failed rows
-    # (status 1/4/5) at the front and never reaches the pending ones.
-    query += " ORDER BY (status IS NOT NULL), updated_at, id"
+    # The task requires processing companies in id order.
+    query += " ORDER BY id"
     if args.limit:
         query += " LIMIT %s"
         params.append(args.limit)
@@ -202,7 +200,9 @@ def process_company(conn, row, api_key, model, logger):
 
     visible_text = extract_visible_text(impressum_html)
     cleaned_text = strip_boilerplate_lines(visible_text)
-    optimized_text, stats = optimize_text(cleaned_text, MAX_TEXT_CHARS)
+    optimized_text, stats = optimize_text(
+        cleaned_text, MAX_TEXT_CHARS, original_text=visible_text
+    )
     logger.info(
         "%s: text optimization method=%s chars %d->%d tokens ~%d->~%d saved ~%d",
         company_name,

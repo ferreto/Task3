@@ -102,11 +102,26 @@ class ParseCompaniesCsvTests(unittest.TestCase):
         with self.assertRaises(self.web_service.csv.Error):
             self.parse("URL;Name;Web\nhttps://a.de;ACME GmbH;a.de\n")
 
+    def test_missing_web_column_is_rejected(self):
+        with self.assertRaises(self.web_service.csv.Error) as ctx:
+            self.parse("URL;Company Name\nhttps://a.de;ACME GmbH\n")
+        self.assertIn("Web", str(ctx.exception))
+
     def test_empty_file_is_rejected(self):
         for text in ("", "\n", "   \n"):
             with self.subTest(text=text):
                 with self.assertRaises(self.web_service.csv.Error):
                     self.parse(text)
+
+    def test_only_provided_columns_are_present_in_row(self):
+        rows = self.parse("URL;Company Name;Web\nhttps://a.de;ACME GmbH;a.de\n")
+        self.assertEqual(set(rows[0]), {"company_name", "web"})
+
+    def test_blank_optional_cell_is_present_as_none(self):
+        rows = self.parse("Company Name;Web;Postcode;City\nACME GmbH;a.de;;Berlin\n")
+        self.assertIn("postcode", rows[0])
+        self.assertIsNone(rows[0]["postcode"])
+        self.assertEqual(rows[0]["city"], "Berlin")
 
 
 @requires_web_deps
@@ -137,6 +152,12 @@ class UploadCompaniesEndpointTests(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertTrue(response.get_json()["error"].startswith("Invalid CSV"))
 
+    def test_missing_web_column_returns_400(self):
+        response = self.post_csv("URL;Company Name\nhttps://a.de;ACME GmbH\n")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("Web", response.get_json()["error"])
+        self.get_db.assert_not_called()
+
     def test_valid_file_is_imported(self):
         with mock.patch.object(
             self.web_service, "_upsert_company", side_effect=["imported", "updated"]
@@ -151,6 +172,67 @@ class UploadCompaniesEndpointTests(unittest.TestCase):
         self.assertEqual(
             response.get_json(), {"imported": 1, "updated": 1, "total_rows": 3}
         )
+
+
+@requires_web_deps
+class UpsertCompanyTests(unittest.TestCase):
+    def setUp(self):
+        self.web_service = load_web_service()
+
+    def upsert(self, row, existed=False):
+        cur = mock.MagicMock()
+        cur.fetchone.return_value = (1,) if existed else None
+        result = self.web_service._upsert_company(cur, row)
+        query, params = cur.execute.call_args_list[1][0]
+        return result, " ".join(query.split()), params
+
+    def test_only_provided_columns_are_written(self):
+        result, query, params = self.upsert(
+            {"company_name": "ACME GmbH", "web": "acme.de"}
+        )
+        self.assertEqual(result, "imported")
+        self.assertIn("INSERT INTO companies (company_name, web)", query)
+        self.assertIn(
+            "ON CONFLICT (company_name) DO UPDATE SET web = EXCLUDED.web", query
+        )
+        self.assertEqual(params, ("ACME GmbH", "acme.de"))
+        for column in ("language", "country", "postcode", "city", "street", "house_no"):
+            self.assertNotIn(column, query)
+
+    def test_blank_provided_column_is_written_as_null(self):
+        _, query, params = self.upsert(
+            {
+                "company_name": "ACME GmbH",
+                "web": "acme.de",
+                "postcode": None,
+                "city": "Berlin",
+            },
+            existed=True,
+        )
+        self.assertIn("postcode = EXCLUDED.postcode", query)
+        self.assertIn("city = EXCLUDED.city", query)
+        self.assertEqual(params, ("ACME GmbH", None, "Berlin", "acme.de"))
+        self.assertNotIn("country", query)
+
+    def test_omitted_columns_do_not_touch_existing_values(self):
+        _, query, _ = self.upsert(
+            {"company_name": "ACME GmbH", "web": "acme.de"}, existed=True
+        )
+        for column in (
+            "language",
+            "country",
+            "postcode",
+            "city",
+            "street",
+            "house_no",
+            "status",
+            "legal_name",
+            "postal_address",
+            "raw_json",
+            "created_at",
+            "updated_at",
+        ):
+            self.assertNotIn(column, query)
 
 
 if __name__ == "__main__":

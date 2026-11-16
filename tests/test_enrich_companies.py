@@ -72,9 +72,9 @@ class SelectCompaniesTests(unittest.TestCase):
         self.assertIn("WHERE (status IS NULL OR status <> 0)", query)
         self.assertEqual(params, [])
 
-    def test_pending_first_then_least_recently_processed(self):
+    def test_rows_are_processed_in_id_order(self):
         query, _ = self.run_select(limit=2)
-        self.assertIn("ORDER BY (status IS NOT NULL), updated_at, id", query)
+        self.assertIn("ORDER BY id", query)
         self.assertTrue(query.endswith("LIMIT %s"))
 
     def test_limit_is_passed_as_parameter(self):
@@ -205,6 +205,53 @@ class UpdateEnrichedTests(unittest.TestCase):
         raw_json_param = params[9]
         self.assertEqual(raw_json_param.adapted, raw)
         conn.commit.assert_called_once()
+
+
+@requires_psycopg2
+class UpdateStatusTests(unittest.TestCase):
+    def run_update(self, status, impressum_url=None):
+        import enrich_companies
+
+        conn = mock.MagicMock()
+        cur = conn.cursor.return_value.__enter__.return_value
+        enrich_companies.update_status(conn, 1, status, impressum_url=impressum_url)
+        query, params = cur.execute.call_args[0]
+        conn.commit.assert_called_once()
+        return " ".join(query.split()), params
+
+    def test_status_update_preserves_enrichment_fields(self):
+        query, params = self.run_update(5)
+        self.assertEqual(params, (5, 1))
+        self.assertIn("status = %s", query)
+        self.assertIn("updated_at = NOW()", query)
+        for field in (
+            "impressum_url",
+            "legal_name",
+            "postal_address",
+            "handelsregister",
+            "vat_number",
+            "phone",
+            "email",
+            "responsible_person",
+            "raw_json",
+        ):
+            self.assertNotIn(field, query)
+
+    def test_impressum_url_update_preserves_enrichment_fields(self):
+        query, params = self.run_update(4, "https://example.com/impressum")
+        self.assertEqual(params, (4, "https://example.com/impressum", 1))
+        self.assertIn("impressum_url = %s", query)
+        for field in (
+            "legal_name",
+            "postal_address",
+            "handelsregister",
+            "vat_number",
+            "phone",
+            "email",
+            "responsible_person",
+            "raw_json",
+        ):
+            self.assertNotIn(field, query)
 
 
 if __name__ == "__main__":

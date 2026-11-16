@@ -35,6 +35,17 @@ COMPANY_FIELD_MAP = {
     "web": "web",
 }
 
+COMPANY_COLUMNS = (
+    "company_name",
+    "language",
+    "country",
+    "postcode",
+    "city",
+    "street",
+    "house_no",
+    "web",
+)
+
 UPLOAD_FORM = """
 <!doctype html>
 <html lang="en">
@@ -124,19 +135,25 @@ def _parse_companies_csv(raw_bytes):
     )
 
     # Without this check a file with the wrong delimiter or without the
-    # "Company Name" column parses "successfully" and every row is skipped.
+    # required columns parses "successfully" and every row is skipped.
     fieldnames = reader.fieldnames
     if not fieldnames:
         raise csv.Error("file is empty")
-    known = {COMPANY_FIELD_MAP.get((name or "").strip().lower()) for name in fieldnames}
-    if "company_name" not in known:
+
+    def header_error(column):
         header = ";".join(name or "" for name in fieldnames)
         if len(header) > 100:
             header = header[:100] + "..."
-        raise csv.Error(
-            "header must contain a 'Company Name' column and use ';' as the "
+        return csv.Error(
+            f"header must contain a '{column}' column and use ';' as the "
             f"delimiter, got: {header!r}"
         )
+
+    known = {COMPANY_FIELD_MAP.get((name or "").strip().lower()) for name in fieldnames}
+    if "company_name" not in known:
+        raise header_error("Company Name")
+    if "web" not in known:
+        raise header_error("Web")
 
     rows = []
     for raw in reader:
@@ -154,38 +171,33 @@ def _parse_companies_csv(raw_bytes):
 
 
 def _upsert_company(cur, row):
-    """Upsert по company_name. Обновляет только CSV-колонки, не трогая enrichment."""
+    """Upsert по company_name, обновляя только колонки из CSV-заголовка."""
     cur.execute(
         "SELECT 1 FROM companies WHERE company_name = %s",
         (row["company_name"],),
     )
     existed = cur.fetchone() is not None
-    cur.execute(
-        """
-        INSERT INTO companies
-            (company_name, language, country, postcode, city, street, house_no, web)
-        VALUES
-            (%s, %s, %s, %s, %s, %s, %s, %s)
+
+    provided = [column for column in COMPANY_COLUMNS if column in row and column != "company_name"]
+    columns = ["company_name"] + provided
+    placeholders = ", ".join(["%s"] * len(columns))
+    query = f"""
+        INSERT INTO companies ({", ".join(columns)})
+        VALUES ({placeholders})
+    """
+    if provided:
+        assignments = ",\n            ".join(f"{column} = EXCLUDED.{column}" for column in provided)
+        query += f"""
         ON CONFLICT (company_name) DO UPDATE SET
-            language = EXCLUDED.language,
-            country = EXCLUDED.country,
-            postcode = EXCLUDED.postcode,
-            city = EXCLUDED.city,
-            street = EXCLUDED.street,
-            house_no = EXCLUDED.house_no,
-            web = EXCLUDED.web
-        """,
-        (
-            row["company_name"],
-            row.get("language"),
-            row.get("country"),
-            row.get("postcode"),
-            row.get("city"),
-            row.get("street"),
-            row.get("house_no"),
-            row.get("web"),
-        ),
-    )
+            {assignments}
+        """
+    else:
+        query += """
+        ON CONFLICT (company_name) DO NOTHING
+        """
+
+    values = [row["company_name"]] + [row[column] for column in provided]
+    cur.execute(query, tuple(values))
     return "updated" if existed else "imported"
 
 

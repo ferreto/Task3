@@ -58,9 +58,7 @@ Rules:
   content (e.g. Geschaeftsfuehrer, Vorstand, "inhaltlich verantwortlich").
 - Output valid JSON only."""
 
-REMOVE_TAGS = ("script", "style", "noscript", "svg", "nav", "header", "footer")
-# <form> is removed too, unless it holds more than this share of the page text.
-FORM_MAX_TEXT_SHARE = 0.5
+REMOVE_TAGS = ("script", "style", "noscript", "svg", "nav", "header", "footer", "form")
 ADDRESS_KEYS = ("street", "house_no", "postcode", "city", "country")
 FIELD_KEYS = (
     "company_name",
@@ -190,26 +188,10 @@ def find_impressum_url(html, base_url):
     return None
 
 
-def _remove_forms(soup):
-    """Drop <form> blocks (contact / newsletter forms) from the soup.
-
-    Some sites (ASP.NET WebForms, for example) wrap the whole page in a single
-    <form>. Removing it would leave no text at all, so a form that holds most of
-    the page text is kept.
-    """
-    total = len(soup.get_text(" ", strip=True))
-    for form in soup.find_all("form"):
-        if form.decomposed:
-            continue
-        if len(form.get_text(" ", strip=True)) <= total * FORM_MAX_TEXT_SHARE:
-            form.decompose()
-
-
 def extract_visible_text(html):
     soup = _make_soup(html)
     for tag in soup.find_all(REMOVE_TAGS):
         tag.decompose()
-    _remove_forms(soup)
     text = soup.get_text("\n")
     lines = []
     for line in text.splitlines():
@@ -260,19 +242,25 @@ def _stats(method, original, optimized):
 
 
 def _head_tail_window(text, max_chars):
-    head_len = max_chars * 2 // 3
-    tail_len = max(0, max_chars - head_len)
+    if max_chars <= 0:
+        return ""
     separator = "\n...\n"
+    if max_chars <= len(separator):
+        return text[:max_chars]
+    budget = max_chars - len(separator)
+    head_len = budget * 2 // 3
+    tail_len = budget - head_len
     return text[:head_len] + separator + (text[-tail_len:] if tail_len else "")
 
 
-def optimize_text(text, max_chars=None):
+def optimize_text(text, max_chars=None, original_text=None):
     if max_chars is None:
         max_chars = MAX_TEXT_CHARS
 
     stripped = (text or "").strip()
+    original = stripped if original_text is None else original_text
     if len(stripped) <= max_chars:
-        stats = _stats("unchanged", stripped, stripped)
+        stats = _stats("unchanged", original, stripped)
         logger.info(
             "Text optimization: method=%s chars=%d tokens~%d",
             stats["method"],
@@ -303,11 +291,10 @@ def optimize_text(text, max_chars=None):
         method = "full_text_fallback"
 
     if len(candidate) > max_chars:
-        if method == "sandwich" or len(candidate) > max_chars * 2:
-            candidate = _head_tail_window(candidate, max_chars)
-            method = "window_fallback"
+        candidate = _head_tail_window(candidate, max_chars)
+        method = "window_fallback"
 
-    stats = _stats(method, stripped, candidate)
+    stats = _stats(method, original, candidate)
     logger.info(
         "Text optimization: method=%s chars %d->%d tokens~%d->%d saved~%d",
         stats["method"],

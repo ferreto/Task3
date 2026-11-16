@@ -110,8 +110,7 @@ class ExtractVisibleTextTests(unittest.TestCase):
         self.assertNotIn("Absenden", text)
         self.assertNotIn("Ihre Nachricht", text)
 
-    def test_keeps_form_that_wraps_page_content(self):
-        # ASP.NET WebForms pages put the whole body inside one <form>.
+    def test_removes_form_that_wraps_page_content(self):
         html = """
         <html><body>
           <form id="form1" method="post">
@@ -122,11 +121,7 @@ class ExtractVisibleTextTests(unittest.TestCase):
           </form>
         </body></html>
         """
-        text = impressum.extract_visible_text(html)
-        self.assertIn("Impressum", text)
-        self.assertIn("ACME GmbH", text)
-        self.assertIn("Hauptstraße 1, 10115 Berlin", text)
-        self.assertNotIn("Menu", text)
+        self.assertEqual(impressum.extract_visible_text(html), "")
 
     def test_page_without_text_gives_empty_string(self):
         self.assertEqual(
@@ -191,11 +186,13 @@ class OptimizeTextTests(unittest.TestCase):
         self.assertNotIn("UNIQUE_TAIL_MARKER", result)
         self.assertLess(len(result), 1000)
 
-    def test_verification_failure_uses_full_text(self):
+    def test_over_limit_fallback_is_windowed(self):
         text = "Impressum\n" + ("Fülltext ohne rechtliche Angaben. " * 20)
         result, stats = impressum.optimize_text(text, max_chars=500)
-        self.assertEqual(stats["method"], "full_text_fallback")
-        self.assertEqual(result, text.strip())
+        self.assertEqual(stats["method"], "window_fallback")
+        self.assertLessEqual(len(result), 500)
+        self.assertNotEqual(result, text.strip())
+        self.assertIn("Impressum", result)
 
     def test_extreme_length_uses_window(self):
         text = (
@@ -206,8 +203,16 @@ class OptimizeTextTests(unittest.TestCase):
         )
         result, stats = impressum.optimize_text(text, max_chars=500)
         self.assertEqual(stats["method"], "window_fallback")
-        self.assertLessEqual(len(result), 500 + len("\n...\n"))
+        self.assertLessEqual(len(result), 500)
         self.assertIn("Impressum", result)
+
+    def test_window_never_exceeds_small_budget(self):
+        text = "abcdefghij" * 20
+        for max_chars in (1, 5, 6, 50):
+            with self.subTest(max_chars=max_chars):
+                self.assertLessEqual(
+                    len(impressum._head_tail_window(text, max_chars)), max_chars
+                )
 
     def test_stats_contain_token_counts(self):
         text = "Impressum\n" + ("x" * 3000)
@@ -215,6 +220,12 @@ class OptimizeTextTests(unittest.TestCase):
         self.assertIn("original_tokens", stats)
         self.assertIn("optimized_tokens", stats)
         self.assertEqual(stats["original_tokens"], len(text) // 4)
+
+    def test_stats_use_original_visible_text(self):
+        original = "visible text before boilerplate removal"
+        _, stats = impressum.optimize_text("short", max_chars=100, original_text=original)
+        self.assertEqual(stats["original_chars"], len(original))
+        self.assertEqual(stats["original_tokens"], len(original) // 4)
 
 
 class ParseExtractionTests(unittest.TestCase):

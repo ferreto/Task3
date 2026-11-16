@@ -94,14 +94,18 @@ curl -F "file=@companies.csv" http://127.0.0.1:8000/upload_companies
 ```
 
 - The first upload imports rows; later uploads update existing rows and insert new ones.
-- Re-import is idempotent and only updates CSV columns. Enrichment results, `status`,
-  `created_at`, and `updated_at` are preserved.
+- Re-import is idempotent and updates only the columns present in the CSV header. A missing
+  optional header preserves the existing DB value; a present but blank cell is stored as
+  `NULL`. Enrichment results, `status`, `created_at`, and `updated_at` are preserved.
+- `Company Name` and `Web` headers are required. The `Web` cell itself may be empty (a
+  company selected for enrichment gets status `5`), but the column must exist. Re-import
+  alone does not change an existing company's status.
 - Rows without `Company Name` are skipped and logged; `total_rows` counts all parsed data
   rows, including skipped ones.
-- `Web` may be given with or without a scheme. The importer stores it as-is; enrichment
-  normalizes it before fetching.
+- `Web` may be given with or without a scheme. The importer trims surrounding whitespace
+  and stores the value without adding a scheme; enrichment normalizes it before fetching.
 - The legacy `URL` column is ignored (not stored).
-- An empty file, a file whose header has no `Company Name` column (for example one that uses
+- An empty file, a file whose header lacks `Company Name` or `Web` (for example one that uses
   `,` instead of `;` as the delimiter), invalid CSV, or non-UTF-8 input returns HTTP `400`
   with a JSON error. Nothing is imported in that case.
 
@@ -158,27 +162,28 @@ Options:
 - `--status N` — process only rows with this status.
 
 When neither `--company` nor `--status` is given, the default selection is
-`status IS NULL OR status <> 0`. Rows are ordered pending first, then by the least recently
-processed (`ORDER BY (status IS NOT NULL), updated_at, id`), so repeated runs with `--limit`
-move on to new companies instead of retrying the same failed ones. `--company` processes
-that row regardless of its current status.
+`status IS NULL OR status <> 0`. Rows are processed in `id` order (`ORDER BY id`), as
+required by the task; `--limit` only restricts the batch size and does not change the order.
+`--company` processes that row regardless of its current status.
 
 Pipeline per company:
 
 1. Normalize `web` (prepend `https://` when the scheme is missing).
 2. Fetch the home page with a browser-like User-Agent.
 3. Find the Impressum/Imprint link (exact visible text first, `href` fallback).
-4. Fetch the Impressum page, remove non-content tags (including forms, unless a form wraps
-   most of the page text, as on ASP.NET WebForms sites), extract visible text.
+4. Fetch the Impressum page, remove non-content tags including `<form>`, extract visible
+   text.
 5. Strip boilerplate and optimize the text for the token budget. If no text is left, the
    company gets status `2` and DeepSeek is not called.
 6. Call DeepSeek (default `deepseek-chat`, JSON mode, `temperature=0`, retries with backoff).
-7. Store `impressum_url`, extracted fields, and the JSON object returned by the model, as
-   parsed and unmodified, in `raw_json`; set
-   `status` to `0`, `2`, or `3`. Blank or unparseable content after all retries sets `2`;
-   transport/API failures set `4`, missing links `1`, empty websites `5`. Statuses `1`,
-   `4`, `5`, and unparseable responses preserve previously extracted fields; a valid
-   response with no fields (status `2`) stores the empty result as-is.
+7. On a valid DeepSeek response, store `impressum_url`, the normalized extracted fields,
+   and the parsed JSON object returned by the model in `raw_json`; set `status` to `0`, `2`,
+   or `3`. Blank or unparseable content after all retries sets `2`; transport/API failures
+   set `4`, missing links `1`, empty or unusable websites `5`. Failure paths preserve
+   previously extracted fields: statuses `1` and `5` also preserve `impressum_url`; status
+   `2` (no text/unparseable) and status `4` once the Impressum URL is known update
+   `impressum_url`. A valid response with no fields stores `raw_json = {}` and uses the CSV
+   `company_name` as the `legal_name` fallback.
 8. A failure for one company does not stop the batch.
 
 Host-side run (optional; publish PostgreSQL port or use a tunnel):
@@ -209,13 +214,14 @@ Impressum pages often contain navigation, cookie banners, and footers. The scrip
   `Registergericht`, `Geschäftsführer`, `Verantwortlich`) plus a 400-character margin;
 - verifies the result and falls back to the full text if no strong legal signal is found,
   or if the head anchor is missing from the cut;
-- uses a head+tail window when a sandwich result is still over `MAX_TEXT_CHARS` (or when a
-  fallback text exceeds twice the limit);
-- logs method, character counts, and estimated tokens (`len(text) // 4`) before/after.
+- always applies a head+tail window when the resulting text is still longer than
+  `MAX_TEXT_CHARS`, including fallback text, so the hard budget is never exceeded;
+- logs method, character counts, and estimated tokens (`len(text) // 4`) against the
+  original visible text before optimization.
 
 ## Tests
 
-The suite currently contains 61 tests, with DeepSeek HTTP calls and the database mocked.
+The suite currently contains 72 tests, with DeepSeek HTTP calls and the database mocked.
 Unit tests require no running database, network, or API key. Tests for the web service and
 the enrichment script need Flask and `psycopg2` installed and are skipped without them:
 
